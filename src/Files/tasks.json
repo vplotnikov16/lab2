@@ -1,0 +1,44 @@
+{
+  "Task1": {
+    "complexity": "10000"
+  },
+  "Task2": {
+    "complexity": "20000"
+  },
+  "Task3": {
+    "complexity": "40000"
+  },
+  "Task4": {
+    "complexity": "5000"
+  },
+  "Task5": {
+    "complexity": "15000"
+  },
+  "Task6": {
+    "complexity": "25000"
+  },
+  "Task7": {
+    "complexity": "8000"
+  },
+  "Task8": {
+    "complexity": "10000"
+  },
+  "Task9": {
+    "complexity": "20000"
+  },
+  "Task10": {
+    "complexity": "40000"
+  },
+  "Task11": {
+    "complexity": "5000"
+  },
+  "Task12": {
+    "complexity": "15000"
+  },
+  "Task13": {
+    "complexity": "25000"
+  },
+  "Task14": {
+    "complexity": "15000"
+  }
+}

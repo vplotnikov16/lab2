@@ -1,0 +1,17 @@
+{
+  "Computer1": {
+    "capacity": "1000"
+  },
+  "Computer2": {
+    "capacity": "2000"
+  },
+  "Computer3": {
+    "capacity": "4000"
+  },
+  "Computer4": {
+    "capacity": "2000"
+  },
+  "Computer5": {
+    "capacity": "2500"
+  }
+}
