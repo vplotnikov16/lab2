@@ -26,19 +26,20 @@ public class ComputerAgent extends Agent {
     private String computerName;
     private int capacity;
     private double totalTime = 0;
-    private double delta = 2.0; // По умолчанию
+    private double delta = 2.0;
     private Map<AID, String> computers = new HashMap<>();
     private Map<AID, Boolean> tasks = new HashMap<>();
     private List<Map.Entry<AID, Integer>> myTasks = new ArrayList<>();
     private Queue<ACLMessage> CFPs = new LinkedList<>();
     
-    // Для парной балансировки
+    // Парная балансировка
     private AID currentPartner = null;
     private boolean isBalancing = false;
     private int unchangedRounds = 0;
     private double lastTotalTime = 0;
     private int lastTaskCount = 0;
     private int totalTasksInSystem = 0;
+    private boolean balancingInitiated = false;
 
     protected void setup() {
         computerName = getAID().getName();
@@ -47,7 +48,6 @@ public class ComputerAgent extends Agent {
             capacity = Integer.parseInt((String) args[0]);
         else capacity = 1000;
 
-        // Чтение delta из файла
         loadDelta();
 
         DFAgentDescription dfd = new DFAgentDescription();
@@ -219,6 +219,7 @@ public class ComputerAgent extends Agent {
                 if (currentTaskCount > totalTasksInSystem) {
                     System.out.println("[" + computerName + "] Detected new tasks! Resetting balancing.");
                     unchangedRounds = 0;
+                    balancingInitiated = false;
                     totalTasksInSystem = currentTaskCount;
                 }
                 
@@ -230,7 +231,9 @@ public class ComputerAgent extends Agent {
                 for (AID task : tasks.keySet()) question.addReceiver(task);
                 send(question);
 
-                if (!tasks.containsValue(false) && !tasks.isEmpty()) {
+                // Начинаем балансировку, если все задачи распределены
+                if (!tasks.containsValue(false) && !tasks.isEmpty() && !balancingInitiated) {
+                    balancingInitiated = true;
                     addBehaviour(new InitiateBalancingBehaviour());
                 }
             } catch (FIPAException fe) {
@@ -252,17 +255,18 @@ public class ComputerAgent extends Agent {
 
     private class InitiateBalancingBehaviour extends OneShotBehaviour {
         public void action() {
-            // Получаем список всех компьютеров
             DFAgentDescription template = new DFAgentDescription();
             ServiceDescription sd = new ServiceDescription();
             sd.setType("task-executing");
             template.addServices(sd);
             try {
                 DFAgentDescription[] result = DFService.search(myAgent, template);
+                
+                // Очистка только нульевых значений
                 for (DFAgentDescription res : result)
                     if (!computers.containsKey(res.getName())) computers.put(res.getName(), null);
 
-                // Отправляем свои данные всем
+                // Отправляем свои данные
                 ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
                 msg.setOntology("Computer-info");
                 msg.setContent(String.valueOf(totalTime) + " " + String.valueOf(capacity));
@@ -276,6 +280,8 @@ public class ComputerAgent extends Agent {
     }
 
     private class PairBalancingBehaviour extends CyclicBehaviour {
+        private boolean readyToPair = false;
+        
         public void action() {
             // Прием данных от других компьютеров
             ACLMessage msg = receive(MessageTemplate.and(
@@ -287,49 +293,60 @@ public class ComputerAgent extends Agent {
                 computers.put(getAID(), String.valueOf(totalTime) + " " + String.valueOf(capacity));
                 
                 if (!computers.containsValue(null) && !isBalancing) {
+                    // Все компьютеры ответили
                     startPairBalancing();
                 }
                 return;
             }
 
-            // Прием запросов на паринг
+            // Прием запроса на паринг
             ACLMessage pairRequest = receive(MessageTemplate.and(
                     MessageTemplate.MatchOntology("Pair-request"),
                     MessageTemplate.MatchPerformative(ACLMessage.REQUEST)));
             
             if (pairRequest != null) {
-                handlePairRequest(pairRequest);
+                if (isBalancing) {
+                    ACLMessage refuse = pairRequest.createReply();
+                    refuse.setPerformative(ACLMessage.REFUSE);
+                    send(refuse);
+                } else {
+                    isBalancing = true;
+                    currentPartner = pairRequest.getSender();
+                    readyToPair = true;
+                    
+                    ACLMessage accept = pairRequest.createReply();
+                    accept.setPerformative(ACLMessage.AGREE);
+                    accept.setOntology("Pair-accept");
+                    send(accept);
+                    
+                    System.out.println("[" + computerName + "] Accepted pairing with " + currentPartner.getLocalName());
+                }
                 return;
             }
 
-            // Прием подтверждения паринга
-            ACLMessage pairAccept = receive(MessageTemplate.and(
-                    MessageTemplate.MatchOntology("Pair-accept"),
-                    MessageTemplate.MatchPerformative(ACLMessage.AGREE)));
-            
-            if (pairAccept != null) {
-                handlePairAccept(pairAccept);
-                return;
-            }
-
-            // Обмен задачами
-            ACLMessage taskExchange = receive(MessageTemplate.and(
-                    MessageTemplate.MatchOntology("Task-exchange"),
-                    MessageTemplate.MatchPerformative(ACLMessage.INFORM)));
-            
-            if (taskExchange != null) {
-                handleTaskExchange(taskExchange);
-                return;
-            }
-
-            // Завершение обмена
-            ACLMessage exchangeComplete = receive(MessageTemplate.and(
-                    MessageTemplate.MatchOntology("Exchange-complete"),
-                    MessageTemplate.MatchPerformative(ACLMessage.INFORM)));
-            
-            if (exchangeComplete != null) {
-                handleExchangeComplete();
-                return;
+            // Остальные сообщения
+            if (readyToPair) {
+                ACLMessage taskExchange = receive(MessageTemplate.and(
+                        MessageTemplate.MatchOntology("Task-exchange"),
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM)));
+                
+                if (taskExchange != null) {
+                    handleTaskExchange(taskExchange);
+                    readyToPair = false;
+                    return;
+                }
+                
+                ACLMessage exchangeComplete = receive(MessageTemplate.and(
+                        MessageTemplate.MatchOntology("Exchange-complete"),
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM)));
+                
+                if (exchangeComplete != null) {
+                    System.out.println("[" + computerName + "] Exchange completed.");
+                    isBalancing = false;
+                    currentPartner = null;
+                    readyToPair = false;
+                    return;
+                }
             }
 
             block();
@@ -344,60 +361,13 @@ public class ComputerAgent extends Agent {
                     .orElse(0.0);
 
             // Проверка критерия остановки
-            if (checkStopCriteria(avgTime)) {
-                return;
-            }
-
-            // Сортировка компьютеров по загрузке
-            List<Map.Entry<AID, String>> sortedComputers = computers.entrySet().stream()
-                    .filter(e -> e.getValue() != null)
-                    .sorted(Comparator.comparingDouble(e -> Double.parseDouble(e.getValue().split(" ")[0])))
-                    .collect(Collectors.toList());
-
-            // Формирование пар: минимальный с максимальным
-            int myIndex = -1;
-            for (int i = 0; i < sortedComputers.size(); i++) {
-                if (sortedComputers.get(i).getKey().equals(getAID())) {
-                    myIndex = i;
-                    break;
-                }
-            }
-
-            if (myIndex == -1) return;
-
-            // Определяем пару
-            int pairIndex = sortedComputers.size() - 1 - myIndex;
-            
-            // Если я - медиана (центральный элемент при нечетном количестве)
-            if (sortedComputers.size() % 2 == 1 && myIndex == sortedComputers.size() / 2) {
-                System.out.println("[" + computerName + "] I am the median, skipping balancing.");
-                resetBalancingState();
-                return;
-            }
-
-            // Если пара указывает на меня же или выходит за границы
-            if (pairIndex == myIndex || pairIndex < 0 || pairIndex >= sortedComputers.size()) {
-                resetBalancingState();
-                return;
-            }
-
-            AID partner = sortedComputers.get(pairIndex).getKey();
-            
-            // Только менее загруженный инициирует паринг (чтобы избежать дублирования)
-            if (myIndex < sortedComputers.size() / 2) {
-                requestPairing(partner, avgTime);
-            }
-        }
-
-        private boolean checkStopCriteria(double avgTime) {
-            // Проверка: все компьютеры в паре близки к среднему
             long withinDelta = computers.values().stream()
                     .filter(Objects::nonNull)
                     .mapToDouble(s -> Double.parseDouble(s.split(" ")[0]))
                     .filter(t -> Math.abs(t - avgTime) <= delta)
                     .count();
 
-            // Проверка на отсутствие изменений
+            // Проверка на изменения
             boolean hasChanged = Math.abs(totalTime - lastTotalTime) > 0.001 || myTasks.size() != lastTaskCount;
             
             if (!hasChanged) {
@@ -414,84 +384,93 @@ public class ComputerAgent extends Agent {
                                  ", My time=" + String.format("%.2f", totalTime) + 
                                  ", Deviation=" + String.format("%.2f", Math.abs(totalTime - avgTime)) +
                                  ", Unchanged rounds=" + unchangedRounds);
-                resetBalancingState();
-                return true;
-            }
-            return false;
-        }
-
-        private void requestPairing(AID partner, double avgTime) {
-            isBalancing = true;
-            currentPartner = partner;
-            
-            ACLMessage request = new ACLMessage(ACLMessage.REQUEST);
-            request.setOntology("Pair-request");
-            request.setContent(String.valueOf(avgTime));
-            request.addReceiver(partner);
-            send(request);
-            
-            System.out.println("[" + computerName + "] Requesting pairing with " + partner.getLocalName());
-        }
-
-        private void handlePairRequest(ACLMessage request) {
-            if (isBalancing) {
-                // Уже в процессе балансировки, отклоняем
-                ACLMessage refuse = request.createReply();
-                refuse.setPerformative(ACLMessage.REFUSE);
-                send(refuse);
+                isBalancing = false;
+                balancingInitiated = false;
                 return;
             }
 
-            isBalancing = true;
-            currentPartner = request.getSender();
-            double avgTime = Double.parseDouble(request.getContent());
-            
-            ACLMessage accept = request.createReply();
-            accept.setPerformative(ACLMessage.AGREE);
-            accept.setOntology("Pair-accept");
-            send(accept);
-            
-            System.out.println("[" + computerName + "] Accepted pairing with " + currentPartner.getLocalName());
-            
-            // Начинаем обмен задачами
-            performTaskExchange(avgTime);
-        }
+            // Сортировка компьютеров по загрузке
+            List<Map.Entry<AID, String>> sortedComputers = computers.entrySet().stream()
+                    .filter(e -> e.getValue() != null)
+                    .sorted(Comparator.comparingDouble(e -> Double.parseDouble(e.getValue().split(" ")[0])))
+                    .collect(Collectors.toList());
 
-        private void handlePairAccept(ACLMessage accept) {
-            double avgTime = Double.parseDouble(computers.get(currentPartner).split(" ")[0]);
-            System.out.println("[" + computerName + "] Pairing confirmed with " + currentPartner.getLocalName());
+            // Находим мою позицию
+            int myIndex = -1;
+            for (int i = 0; i < sortedComputers.size(); i++) {
+                if (sortedComputers.get(i).getKey().equals(getAID())) {
+                    myIndex = i;
+                    break;
+                }
+            }
+
+            if (myIndex == -1) return;
+
+            // Намерение пары
+            int pairIndex = sortedComputers.size() - 1 - myIndex;
             
-            // Начинаем обмен задачами
-            performTaskExchange(avgTime);
+            // Если я - медиана
+            if (sortedComputers.size() % 2 == 1 && myIndex == sortedComputers.size() / 2) {
+                System.out.println("[" + computerName + "] I am the median, skipping pairing.");
+                isBalancing = false;
+                return;
+            }
+
+            // Проверка пары
+            if (pairIndex == myIndex || pairIndex < 0 || pairIndex >= sortedComputers.size()) {
+                isBalancing = false;
+                return;
+            }
+
+            AID partner = sortedComputers.get(pairIndex).getKey();
+            
+            // Только менее загруженный инициирует
+            if (myIndex < sortedComputers.size() / 2) {
+                isBalancing = true;
+                currentPartner = partner;
+                
+                ACLMessage request = new ACLMessage(ACLMessage.REQUEST);
+                request.setOntology("Pair-request");
+                request.setContent(String.valueOf(avgTime));
+                request.addReceiver(partner);
+                send(request);
+                
+                System.out.println("[" + computerName + "] Requesting pairing with " + partner.getLocalName());
+                
+                // Передаю задачу
+                performTaskExchange(avgTime);
+            }
         }
 
         private void performTaskExchange(double avgTime) {
-            double partnerTime = Double.parseDouble(computers.get(currentPartner).split(" ")[0]);
-            int partnerCapacity = Integer.parseInt(computers.get(currentPartner).split(" ")[1]);
+            if (currentPartner == null) return;
             
-            // Я - менее загруженный, партнер - более загруженный
-            boolean iAmLessLoaded = totalTime < partnerTime;
+            String partnerData = computers.get(currentPartner);
+            if (partnerData == null) return;
             
-            if (iAmLessLoaded) {
-                // Ожидаю получения задачи от партнера
-                System.out.println("[" + computerName + "] Waiting for task from " + currentPartner.getLocalName());
-            } else {
-                // Я более загруженный - передаю задачу
+            double partnerTime = Double.parseDouble(partnerData.split(" ")[0]);
+            int partnerCapacity = Integer.parseInt(partnerData.split(" ")[1]);
+            
+            // Онределяем, кто более загружен
+            boolean iAmMoreLoaded = totalTime > partnerTime;
+            
+            if (iAmMoreLoaded && !myTasks.isEmpty()) {
+                // Я более загружен, нужно передать задачу
                 Map.Entry<AID, Integer> taskToGive = findBestTaskToGive(avgTime, partnerTime, partnerCapacity);
                 
                 if (taskToGive != null) {
+                    // Предаю задачу
                     ACLMessage exchange = new ACLMessage(ACLMessage.INFORM);
                     exchange.setOntology("Task-exchange");
                     exchange.setContent(taskToGive.getKey().getName() + " " + taskToGive.getValue());
                     exchange.addReceiver(currentPartner);
                     send(exchange);
                     
-                    // Удаляем задачу у себя
+                    // Удаляю задачу из своего списка
                     myTasks.remove(taskToGive);
                     totalTime -= (double) taskToGive.getValue() / capacity;
-                    tasks.put(taskToGive.getKey(), false);
                     
-                    // Уведомляем задачу о снятии
+                    // Отправляю Remove TaskAgent
                     ACLMessage removeMsg = new ACLMessage(ACLMessage.INFORM);
                     removeMsg.setOntology("Remove");
                     removeMsg.addReceiver(taskToGive.getKey());
@@ -502,19 +481,12 @@ public class ComputerAgent extends Agent {
                 } else {
                     System.out.println("[" + computerName + "] No suitable task to exchange.");
                 }
-                
-                // Уведомляем о завершении
-                ACLMessage complete = new ACLMessage(ACLMessage.INFORM);
-                complete.setOntology("Exchange-complete");
-                complete.addReceiver(currentPartner);
-                send(complete);
-                
-                resetBalancingState();
+            } else {
+                System.out.println("[" + computerName + "] Partner more loaded or I have no tasks. Waiting.");
             }
         }
 
         private Map.Entry<AID, Integer> findBestTaskToGive(double avgTime, double partnerTime, int partnerCapacity) {
-            // Находим задачу, которая приблизит оба компьютера к среднему
             Map.Entry<AID, Integer> bestTask = null;
             double bestImprovement = 0;
             
@@ -522,7 +494,6 @@ public class ComputerAgent extends Agent {
                 double myNewTime = totalTime - (double) task.getValue() / capacity;
                 double partnerNewTime = partnerTime + (double) task.getValue() / partnerCapacity;
                 
-                // Вычисляем улучшение (уменьшение максимального отклонения от среднего)
                 double currentMaxDev = Math.max(Math.abs(totalTime - avgTime), Math.abs(partnerTime - avgTime));
                 double newMaxDev = Math.max(Math.abs(myNewTime - avgTime), Math.abs(partnerNewTime - avgTime));
                 double improvement = currentMaxDev - newMaxDev;
@@ -541,7 +512,7 @@ public class ComputerAgent extends Agent {
             String taskName = parts[0];
             int complexity = Integer.parseInt(parts[1]);
             
-            // Находим AID задачи по имени
+            // Находим задачу
             AID taskAID = null;
             for (AID aid : tasks.keySet()) {
                 if (aid.getName().contains(taskName)) {
@@ -553,20 +524,17 @@ public class ComputerAgent extends Agent {
             if (taskAID != null) {
                 System.out.println("[" + computerName + "] Received task " + taskName + 
                                  " from " + exchange.getSender().getLocalName());
-                // Задача будет переназначена через Contract Net Protocol
-                tasks.put(taskAID, false);
+                // Принимаю задачу
+                myTasks.add(Map.entry(taskAID, complexity));
+                totalTime += (double) complexity / capacity;
+                tasks.put(taskAID, true);
             }
-        }
-
-        private void handleExchangeComplete() {
-            System.out.println("[" + computerName + "] Exchange completed with " + currentPartner.getLocalName());
-            resetBalancingState();
-        }
-
-        private void resetBalancingState() {
-            isBalancing = false;
-            currentPartner = null;
-            computers.replaceAll((k, v) -> null);
+            
+            // Отправляю оповещение о завершении
+            ACLMessage complete = new ACLMessage(ACLMessage.INFORM);
+            complete.setOntology("Exchange-complete");
+            complete.addReceiver(exchange.getSender());
+            send(complete);
         }
     }
 }
