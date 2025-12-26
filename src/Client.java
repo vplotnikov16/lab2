@@ -17,7 +17,7 @@ public class Client {
         Runtime rt = Runtime.instance();
 
         Profile p = new ProfileImpl();
-        p.setParameter(Profile.MAIN_HOST, "192.168.1.211");
+        p.setParameter(Profile.MAIN_HOST, "172.20.10.3");
         p.setParameter(Profile.MAIN_PORT, "1099");
         AgentContainer agentContainer = rt.createAgentContainer(p);
 
