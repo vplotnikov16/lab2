@@ -5,7 +5,7 @@ import jade.core.ProfileImpl;
 import jade.core.Runtime;
 import jade.wrapper.AgentContainer;
 import jade.wrapper.AgentController;
-import jade.wrapper.StaleProxyException;
+import jade.wrapper.ControllerException;
 
 import java.io.File;
 import java.io.IOException;
@@ -23,7 +23,7 @@ public class Client {
 
         // Thread.sleep(5000);
         try {
-            String containerName = agentContainer.getContainerController().getContainerName();
+            String containerName = agentContainer.getContainerName();
             String prefix = generatePrefix(containerName);
 
             JsonNode tasks = new ObjectMapper().readTree(new File("src/Files/tasks.json"));
@@ -39,7 +39,7 @@ public class Client {
                 );
                 agent.start();
             }
-        } catch (StaleProxyException | IOException e) {
+        } catch (IOException | ControllerException e) {
             throw new RuntimeException(e);
         }
     }
